@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { getCompanies, deleteCompany, scanCompany, deleteAllRecords } from '../../services/custonmers-companies-api';
+import { getCompanies, deleteCompany, scanCompany, deleteAllRecords, analyzeJobLinksExport } from '../../services/custonmers-companies-api';
 import { Company } from '@/types';
 import { Plus, Search, RefreshCw } from 'lucide-react';
 import CompanyCard from '@/components/customer/CompanyCard';
@@ -22,8 +22,50 @@ const CustomerDashboard = () => {
     website: true,
     linkedin: false,
   });
+  const [analyzingLinks, setAnalyzingLinks] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
+
+  const analyzeJobLinks = async () => {
+    try {
+      setAnalyzingLinks(true);
+      const blob = await analyzeJobLinksExport(user.id);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `JobLinks-analyzed-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast({
+        title: 'Export ready',
+        description: 'Job links analyzed and Excel file downloaded.',
+      });
+    } catch (error: unknown) {
+      console.error('Analyze job links error:', error);
+      let message = 'Failed to analyze job links. Ensure JobLinks.xlsx exists in backend/output.';
+      if (error && typeof error === 'object' && 'response' in error) {
+        const res = (error as { response: { data?: Blob | { message?: string }; status?: number } }).response;
+        if (res.data && typeof res.data === 'object' && res.data !== null && 'message' in res.data) {
+          message = (res.data as { message: string }).message;
+        } else if (res.data instanceof Blob) {
+          try {
+            const text = await (res.data as Blob).text();
+            const parsed = JSON.parse(text);
+            if (parsed?.message) message = parsed.message;
+          } catch {
+            // keep default message
+          }
+        }
+      }
+      toast({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setAnalyzingLinks(false);
+    }
+  };
 
   useEffect(() => {
     if (localStorage.getItem('user')) fetchCompanies();
@@ -242,6 +284,14 @@ const CustomerDashboard = () => {
             className="flex items-center gap-2 h-9 px-4"
           >
             Delete All Records
+          </Button>
+          <Button
+            variant="default"
+            onClick={analyzeJobLinks}
+            disabled={analyzingLinks}
+            className="flex items-center gap-2 h-9 px-4"
+          >
+            {analyzingLinks ? 'Analyzing...' : 'Analyze Job Links'}
           </Button>
         </div>
       </div>

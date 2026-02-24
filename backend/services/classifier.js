@@ -6,8 +6,17 @@ dotenv.config();
 
 class Classifier {
   constructor(apiKey) {
+    if (!apiKey) {
+      throw new Error('OpenAI API key is required');
+    }
+    if (!apiKey.startsWith('sk-')) {
+      throw new Error('Invalid OpenAI API key format. Key should start with "sk-"');
+    }
+    
     this.openai = new OpenAI({
-      apiKey: apiKey
+      apiKey: apiKey,
+      timeout: 30000,  // 30 second timeout
+      maxRetries: 2,   // Built-in retry attempts
     });
   }
 
@@ -21,33 +30,62 @@ class Classifier {
     const { title, description, company } = jobPosting;
     const {
       customPrompt,
-      threshold = 0.8
+      threshold = 0.8,
+      maxRetries = 3,
     } = options;
 
-    try {
-      // Construct prompt for GPT-4
-      const prompt = customPrompt || 
-        "Determine if this job posting is for a technical role. A technical role requires programming, software development, IT, data science, engineering, deploying, or Telecomunication similar technical skills including technical leader. Output TECHNICAL if it is technical, NON-TECHNICAL if not.";
-      
-      const jobText = `Job Title: ${title}\nCompany: ${company || 'Not specified'}\nJob Description: ${description}`;
-      
-      const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: prompt },
-          { role: "user", content: jobText }
-        ],
-        temperature: 0.3
-      });
+    const prompt = customPrompt || 
+      "Determine if this job posting is for a technical role. A technical role requires programming, software development, IT, data science, engineering, deploying, or Telecomunication similar technical skills including technical leader. Output TECHNICAL if it is technical, NON-TECHNICAL if not.";
+    
+    const jobText = `Job Title: ${title}\nCompany: ${company || 'Not specified'}\nJob Description: ${description}`;
 
-      // Extract the response
-      const response = completion.choices[0].message.content.trim();
-      
-      return response;
-    } catch (error) {
-      console.error('Classification error:', error.message);
-      throw error;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const completion = await this.openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: prompt },
+            { role: "user", content: jobText }
+          ],
+          temperature: 0.3,
+          timeout: 30000,
+        });
+
+        // Extract the response
+        const response = completion.choices[0].message.content.trim();
+        return response;
+      } catch (error) {
+        lastError = error;
+        const isConnectionError = error.code === 'ECONNREFUSED' || 
+                                 error.code === 'ETIMEDOUT' || 
+                                 error.code === 'ENOTFOUND' ||
+                                 error.status === 401 ||
+                                 error.status === 429 ||
+                                 error.message?.includes('Connection') ||
+                                 error.message?.includes('timeout');
+
+        console.warn(`Classification attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+
+        if (isConnectionError && attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s
+          const delay = Math.pow(2, attempt - 1) * 1000;
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else if (attempt === maxRetries) {
+          console.error(`Failed to classify after ${maxRetries} attempts. Last error:`, {
+            status: error.status,
+            code: error.code,
+            message: error.message,
+            type: error.type,
+          });
+          throw error;
+        }
+      }
     }
+
+    throw lastError;
   }
   
   /**

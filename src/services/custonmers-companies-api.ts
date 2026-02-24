@@ -48,3 +48,15 @@ export const deleteAllRecords = async (customerId: string): Promise<string> => {
     const response = await axios.post(`${BASE_URL}/customers-companies/${customerId}/deleteRecords`);
     return response.data.message;
 };
+
+/**
+ * Analyze job links from JobLinks.xlsx; returns blob for download of new Excel with Remote column.
+ */
+export const analyzeJobLinksExport = async (customerId: string): Promise<Blob> => {
+    const response = await axios.post(
+        `${BASE_URL}/customers-companies/${customerId}/analyze-job-links`,
+        {},
+        { responseType: 'blob' }
+    );
+    return response.data;
+};

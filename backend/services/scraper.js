@@ -13,6 +13,22 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Validate if a string is a valid URL
+ * @param {string} urlString - The URL to validate
+ * @returns {boolean} - True if valid URL, false otherwise
+ */
+function isValidUrl(urlString) {
+  console.log("Validating URL:", urlString);
+  if (!urlString || typeof urlString !== 'string' || urlString.toLocaleLowerCase().includes('google') || urlString.toLocaleLowerCase().includes('about:blank')) return false;
+  try {
+    new URL(urlString);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 // External viewJobs function
 // const viewJobs = (text) => {
 //   const keywords = [
@@ -33,11 +49,11 @@ function delay(ms) {
 //   );
 // };
 
-const isPageNumber = (text) => {
+const isPageNumber = (text, i) => {
   const regex = /^\d+$/;
   if (regex.test(text)) {
     const num = parseFloat(text); // Convert the string to a number
-    return !isNaN(num) && num < 20; // Check if it's a valid number and less than 20
+    return !isNaN(num) && num == i; // Check if it's a valid number and equals the expected page number
   }
   return false;
 };
@@ -137,8 +153,8 @@ function generalizeSelector(sel) {
     .replace(/:nth-child\(\s*\d+\s*\)/g, "")
     .replace(/:nth-of-type\(\s*\d+\s*\)/g, "")
     .replace(/:(first|last)-child/g, "")
-    .replace(/\s*>\s*/g, " > ")    // normalize combinator spacing
-    .replace(/\s+/g, " ")          // collapse extra spaces
+    .replace(/\s*>\s*/g, " > ") // normalize combinator spacing
+    .replace(/\s+/g, " ") // collapse extra spaces
     .trim();
 }
 
@@ -312,11 +328,14 @@ async function findItem(page, selector) {
 
 const Scraper = async (name, url, apiKey, step, links, selector) => {
   console.log("url", url);
-  if (!url) return { found: 1, jobs: "[]" };
-  const openai = new OpenAI({ apiKey: apiKey });
+  if (!isValidUrl(url)) {
+    console.warn("⚠️ Invalid or missing URL provided:", url);
+    return { found: 1, jobs: "[]" };
+  }
+  // const openai = new OpenAI({ apiKey: apiKey });
 
   const browser = await chromium.launch({
-    headless: true,
+    headless: false,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -340,175 +359,165 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
   let urlcontext = [],
     prompt = "";
   if (url.includes("linkedin")) {
-    const linkedinurlforAll = fs.readFileSync("linkedinurlforAll.txt", "utf8");
-    let companyName = "";
-    const parsedUrl = new URL(url);
-    const segments = parsedUrl.pathname.split("/").filter(Boolean); // remove empty
-    // Look for the segment following 'company'
-    const idx = segments.indexOf("company");
-    if (idx !== -1 && segments.length > idx + 1) {
-      companyName = segments[idx + 1];
-    }
-    // Normalize LinkedIn company URL to the company profile page
-    // e.g. convert https://www.linkedin.com/company/moonee/jobs/ -> https://www.linkedin.com/company/moonee/
-    let companyProfileUrl = null;
-    if (companyName) {
-      companyProfileUrl = `${parsedUrl.protocol}//${parsedUrl.host}/company/${companyName}/`;
-      // use the profile URL for subsequent API calls that expect the company page
-      url = companyProfileUrl;
-    }
-    const jobPageUrl = JSON.parse(linkedinurlforAll);
-    let snapshot_id;
-    if (!jobPageUrl[companyName]) {
-      await axios
-        .post(
-          `https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_l1vikfnt1wgvvqz95w&include_errors=true`,
-          { url: url },
-          {
-            headers: {
-              Authorization: `Bearer ${brightKey}`,
-              "Content-Type": "application/json",
-            },
-          },
-        )
-        .then((response) => {
-          snapshot_id = response.data.snapshot_id;
-          console.log(response.data);
-        })
-        .catch((error) => console.error(error));
-
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          console.log(`⏳ Attempt ${attempt}: Fetching snapshot data...`);
-
-          const response = await axios.get(
-            `https://api.brightdata.com/datasets/v3/snapshot/${snapshot_id}?format=json`,
-            {
-              headers: {
-                Authorization: `Bearer ${brightKey}`,
-              },
-              timeout: 15000, // 15s timeout to avoid hanging
-            },
-          );
-
-          if (response.status === 200) {
-            console.log("✅ Snapshot is ready! Data:");
-            companyData = response.data;
-            console.log("Data:", companyData);
-            jobPageUrl[companyName] =
-              `https://www.linkedin.com/jobs/${companyData[0].name.replace(/\s+/g, "")}-jobs-worldwide?f_C=${companyData[0].company_id}`;
-            fs.writeFileSync(
-              "linkedinurlforAll.txt",
-              JSON.stringify(jobPageUrl, null, 2),
-              "utf8",
-            );
-            break;
-          } else {
-            console.log(
-              "⚠️ Snapshot not ready yet (empty response), retrying...",
-            );
-          }
-        } catch (err) {
-          console.log(`⚠️ Error on attempt ${attempt}: ${err.message}`);
-          break;
-        }
-        // Wait before next try
-        await delay(DELAY_MS);
-      }
-    }
-
-    if (!jobPageUrl[companyName]) return { found: 1, jobs: "[]" };
-
-    await axios
-      .post(
-        "https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_lpfll7v5hcqtkxl6l&include_errors=true&type=discover_new&discover_by=url",
-        { url: jobPageUrl[companyName] },
-        {
-          headers: {
-            Authorization:
-              "Bearer 00af2aac5429b88e7c595f0090606d12abae32445f73502e3503ea37b724c9ad",
-            "Content-Type": "application/json",
-          },
-        },
-      )
-      .then((response) => {
-        console.log(response.data);
-        snapshot_id = response.data.snapshot_id;
-      })
-      .catch((error) => console.error(error));
-
-    let jobAnchors = [];
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        console.log(`⏳ Attempt ${attempt}: Fetching snapshot data...`);
-
-        const response = await axios.get(
-          `https://api.brightdata.com/datasets/v3/snapshot/${snapshot_id}?format=json`,
-          {
-            headers: {
-              Authorization: `Bearer ${brightKey}`,
-            },
-            timeout: 15000, // 15s timeout to avoid hanging
-          },
-        );
-
-        if (response.status === 200) {
-          console.log("✅ Snapshot is ready! Data:");
-          jobAnchors = response.data.filter(
-            (item, index, arr) =>
-              index === arr.findIndex((x) => x.url === item.url),
-          );
-          console.log("Data:", jobAnchors);
-          break;
-        } else {
-          console.log(
-            "⚠️ Snapshot not ready yet (empty response), retrying...",
-          );
-        }
-      } catch (err) {
-        console.log(`⚠️ Error on attempt ${attempt}: ${err.message}`);
-        break;
-      }
-      // Wait before next try
-      await delay(DELAY_MS);
-    }
-
-    console.log("jobAnchors", jobAnchors.length);
-    let json = jobAnchors
-      .filter(
-        (a) =>
-          !(Array.isArray(links) ? links : []).some(
-            (l) => l && l.includes(a.url),
-          ),
-      )
-      .map((a) => {
-        return { title: a.job_title, company: a.company_name, link: a.url };
-      });
-
-    const removed = (Array.isArray(links) ? links : []).filter(
-      (l) =>
-        l &&
-        !(Array.isArray(jobAnchors) ? jobAnchors : []).some((j) =>
-          l.includes(j.url),
-        ),
-    );
-
-    console.log("Parsed JSON:", json.length);
-    page.close();
-    return {
-      found: 1,
-      jobs: JSON.stringify(json),
-      removed: JSON.stringify(removed),
-    };
+    // const linkedinurlforAll = fs.readFileSync("linkedinurlforAll.txt", "utf8");
+    // let companyName = "";
+    // const parsedUrl = new URL(url);
+    // const segments = parsedUrl.pathname.split("/").filter(Boolean); // remove empty
+    // // Look for the segment following 'company'
+    // const idx = segments.indexOf("company");
+    // if (idx !== -1 && segments.length > idx + 1) {
+    //   companyName = segments[idx + 1];
+    // }
+    // // Normalize LinkedIn company URL to the company profile page
+    // // e.g. convert https://www.linkedin.com/company/moonee/jobs/ -> https://www.linkedin.com/company/moonee/
+    // let companyProfileUrl = null;
+    // if (companyName) {
+    //   companyProfileUrl = `${parsedUrl.protocol}//${parsedUrl.host}/company/${companyName}/`;
+    //   // use the profile URL for subsequent API calls that expect the company page
+    //   url = companyProfileUrl;
+    // }
+    // const jobPageUrl = JSON.parse(linkedinurlforAll);
+    // let snapshot_id;
+    // if (!jobPageUrl[companyName]) {
+    //   await axios
+    //     .post(
+    //       `https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_l1vikfnt1wgvvqz95w&include_errors=true`,
+    //       { url: url },
+    //       {
+    //         headers: {
+    //           Authorization: `Bearer ${brightKey}`,
+    //           "Content-Type": "application/json",
+    //         },
+    //       },
+    //     )
+    //     .then((response) => {
+    //       snapshot_id = response.data.snapshot_id;
+    //       console.log(response.data);
+    //     })
+    //     .catch((error) => console.error(error));
+    //   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    //     try {
+    //       console.log(`⏳ Attempt ${attempt}: Fetching snapshot data...`);
+    //       const response = await axios.get(
+    //         `https://api.brightdata.com/datasets/v3/snapshot/${snapshot_id}?format=json`,
+    //         {
+    //           headers: {
+    //             Authorization: `Bearer ${brightKey}`,
+    //           },
+    //           timeout: 15000, // 15s timeout to avoid hanging
+    //         },
+    //       );
+    //       if (response.status === 200) {
+    //         console.log("✅ Snapshot is ready! Data:");
+    //         companyData = response.data;
+    //         console.log("Data:", companyData);
+    //         jobPageUrl[companyName] =
+    //           `https://www.linkedin.com/jobs/${companyData[0].name.replace(/\s+/g, "")}-jobs-worldwide?f_C=${companyData[0].company_id}`;
+    //         fs.writeFileSync(
+    //           "linkedinurlforAll.txt",
+    //           JSON.stringify(jobPageUrl, null, 2),
+    //           "utf8",
+    //         );
+    //         break;
+    //       } else {
+    //         console.log(
+    //           "⚠️ Snapshot not ready yet (empty response), retrying...",
+    //         );
+    //       }
+    //     } catch (err) {
+    //       console.log(`⚠️ Error on attempt ${attempt}: ${err.message}`);
+    //       break;
+    //     }
+    //     // Wait before next try
+    //     await delay(DELAY_MS);
+    //   }
+    // }
+    // if (!jobPageUrl[companyName]) return { found: 1, jobs: "[]" };
+    // await axios
+    //   .post(
+    //     "https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_lpfll7v5hcqtkxl6l&include_errors=true&type=discover_new&discover_by=url",
+    //     { url: jobPageUrl[companyName] },
+    //     {
+    //       headers: {
+    //         Authorization:
+    //           "Bearer 00af2aac5429b88e7c595f0090606d12abae32445f73502e3503ea37b724c9ad",
+    //         "Content-Type": "application/json",
+    //       },
+    //     },
+    //   )
+    //   .then((response) => {
+    //     console.log(response.data);
+    //     snapshot_id = response.data.snapshot_id;
+    //   })
+    //   .catch((error) => console.error(error));
+    // let jobAnchors = [];
+    // for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    //   try {
+    //     console.log(`⏳ Attempt ${attempt}: Fetching snapshot data...`);
+    //     const response = await axios.get(
+    //       `https://api.brightdata.com/datasets/v3/snapshot/${snapshot_id}?format=json`,
+    //       {
+    //         headers: {
+    //           Authorization: `Bearer ${brightKey}`,
+    //         },
+    //         timeout: 15000, // 15s timeout to avoid hanging
+    //       },
+    //     );
+    //     if (response.status === 200) {
+    //       console.log("✅ Snapshot is ready! Data:");
+    //       jobAnchors = response.data.filter(
+    //         (item, index, arr) =>
+    //           index === arr.findIndex((x) => x.url === item.url),
+    //       );
+    //       console.log("Data:", jobAnchors);
+    //       break;
+    //     } else {
+    //       console.log(
+    //         "⚠️ Snapshot not ready yet (empty response), retrying...",
+    //       );
+    //     }
+    //   } catch (err) {
+    //     console.log(`⚠️ Error on attempt ${attempt}: ${err.message}`);
+    //     break;
+    //   }
+    //   // Wait before next try
+    //   await delay(DELAY_MS);
+    // }
+    // console.log("jobAnchors", jobAnchors.length);
+    // let json = jobAnchors
+    //   .filter(
+    //     (a) =>
+    //       !(Array.isArray(links) ? links : []).some(
+    //         (l) => l && l.includes(a.url),
+    //       ),
+    //   )
+    //   .map((a) => {
+    //     return { title: a.job_title, company: a.company_name, link: a.url };
+    //   });
+    // const removed = (Array.isArray(links) ? links : []).filter(
+    //   (l) =>
+    //     l &&
+    //     !(Array.isArray(jobAnchors) ? jobAnchors : []).some((j) =>
+    //       l.includes(j.url),
+    //     ),
+    // );
+    // console.log("Parsed JSON:", json.length);
+    // page.close();
+    // return {
+    //   found: 1,
+    //   jobs: JSON.stringify(json),
+    //   removed: JSON.stringify(removed),
+    // };
   } else {
     // if (
     //   step == 1 &&
     //   !url.includes("apply.workable.com") &&
     //   !url.includes("comeet.com")
     // ) {
-    //   const domain = new URL(url).hostname;
-    //   console.log("domain", domain);
+    let domain = new URL(url).hostname;
+    if (!domain.startsWith("http")) {
+      domain = "https://" + domain;
+    }
     //   const urlforAll = fs.readFileSync("urlforAll.txt", "utf8");
     //   const parsedUrl = JSON.parse(urlforAll);
     //   console.log("parsedUrl", parsedUrl[domain]);
@@ -529,9 +538,9 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     //     let prompt = `
     //       A user is looking for the most direct job listings page on this company's website (${domain}).
     //       Here are candidate URLs from a Google search:
-  
+
     //       ${serpLinks.map((l) => `- ${l.title}: ${l.link}`).join("\n")}
-  
+
     //       Return only the single best URL that:
     //       - Lists all current job openings
     //       - Links each job to a detail/apply page
@@ -555,7 +564,7 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     console.log("refined url : ", url);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 300000 });
 
-    await page.waitForTimeout(6000);
+    await page.waitForTimeout(12000);
 
     // await page.evaluate(() => {
     //   const button = Array.from(document.querySelectorAll("button")).find(
@@ -565,7 +574,7 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     // });
 
     // Scroll to the bottom multiple times to trigger lazy loading
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 10; i++) {
       await page.mouse.wheel(0, 3000); // Simulate scrolling
       await page.waitForTimeout(2000); // Wait for the content to load (adjust time as needed)
     }
@@ -573,7 +582,7 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     // Loop through all iframes
     const frames = page.frames();
     // let result = {}
-      // newpageList = [];
+    // newpageList = [];
     // let clickable = [];
     // for (const frame of frames) {
     //   let frameAnchors = {};
@@ -844,11 +853,11 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
 
     // const fullPrompt = `
     // You are given multiple groups of text content from a job listing page, grouped by the HTML class name or tag name they come from.
-    
+
     // Each group looks like this:
-    
+
     // ${groups}
-    
+
     // Among these, which class name or tag name contains the group of texts that are mostly like job titles? Only respond with the class name or tag name as string array.
     // If there is no one similar with job only please ouput empty array.`;
 
@@ -982,11 +991,11 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     let jobAnchors = await findItem(page, selector);
 
     console.log("Initial jobAnchors", jobAnchors);
-
+    const beforeUrl = page.url();
     for (let i = 0; ; i++) {
       try {
         clickableElements = await page.$$("a, button");
-        clickable = [];
+        let readNextPage = false;
         for (const handle of clickableElements) {
           if (!(await handle.isVisible())) continue;
           const text = await handle.evaluate((el) =>
@@ -994,69 +1003,72 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
           );
           const target = await handle.getAttribute("target");
 
-          if ((isPageNumber(text)) && target != "_blank")
-            clickable.push(handle);
-        }
+          if (isPageNumber(text, i + 1) && target != "_blank") {
+            const el = handle;
 
-        console.log("clickable", clickable.length);
+            console.log(i, "...", await el.isVisible());
 
-        if (i >= clickable.length) break;
-        const el = clickable[i];
-
-        console.log("now : ", page.url());
-        const beforeUrl = page.url();
-
-        console.log(i, "...", await el.isVisible());
-
-        if (
-          (await el.isVisible()) &&
-          (await el.evaluate((el) => document.body.contains(el)))
-        ) {
-          console.log(
-            "Attempting to click element:",
-            await el.evaluate((el) => el.outerHTML),
-          );
-          await el.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(500); // Give time to settle
-
-          // Wait for clickable state
-          await el.waitForElementState("stable");
-
-          // await page.evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true })), el);
-          await el.click();
-
-          await page.waitForLoadState("domcontentloaded"); // Extra safety
-          await page.waitForTimeout(8000);
-
-          // Process the new page content
-          const itemAnchors = await findItem(page, selector);
-          for (const a of itemAnchors) {
             if (
-              !jobAnchors.some((j) => j === a)
+              (await el.isVisible()) &&
+              (await el.evaluate((el) => document.body.contains(el)))
             ) {
-              jobAnchors.push(a);
-            }
-          }
+              console.log(
+                "Attempting to click element:",
+                await el.evaluate((el) => el.outerHTML),
+              );
+              await el.scrollIntoViewIfNeeded();
+              await page.waitForTimeout(500); // Give time to settle
 
-          if (beforeUrl != page.url()) {
-            // Try going back only if there was navigation
-            await page.goBack({ waitUntil: "domcontentloaded" });
-            await page.waitForTimeout(4000);
+              // Wait for clickable state
+              await el.waitForElementState("stable");
+
+              // await page.evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true })), el);
+              // console.log("Clicking element...", el);
+
+              // Try force click first, fallback to JavaScript evaluation
+              try {
+                await page.evaluate((element) => element.click(), el);
+              } catch (clickErr) {
+                console.log(
+                  "Regular click failed, trying JavaScript evaluation...",
+                );
+                await page.evaluate((element) => element.click(), el);
+              }
+
+              await page.waitForLoadState("domcontentloaded"); // Extra safety
+              await page.waitForTimeout(8000);
+
+              // Process the new page content
+              const itemAnchors = await findItem(page, selector);
+              for (const a of itemAnchors) {
+                if (!jobAnchors.some((j) => j === a)) {
+                  jobAnchors.push(a);
+                }
+              }
+            }
+            readNextPage = true; // Only click one pagination link at a time
           }
         }
+        if (!readNextPage) break; // Exit loop if no pagination link was found/clicked
       } catch (error) {
         console.log(`❌ Error processing clickable[${i}]:`, error.message);
       }
     }
+    if (beforeUrl != page.url()) {
+      // Try going back only if there was navigation
+      await page.goto(beforeUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(4000);
+    }
     for (const frame of frames) {
       if (frame === page.mainFrame()) continue;
-      if (url.includes("spikerz")) break;
+      const frameUrl = frame.url();
+      console.log("frameUrl", frameUrl);
+      if (!isValidUrl(frameUrl)) continue;
+      console.log("Valid frame URL:", !isValidUrl(frameUrl));
 
       let frameAnchors = [];
 
       try {
-        const frameUrl = frame.url();
-        console.log("frameiUrl", frameUrl);
         // Open iframe in a new page to bypass cross-origin issues
         const iframePage = await page.context().newPage();
         await iframePage.goto(frameUrl, {
@@ -1077,23 +1089,26 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
       }
 
       // Add the extracted anchors to the jobAnchors array
-      frameAnchors.forEach((a) =>
-        jobAnchors.push(a),
-      );
+      frameAnchors.forEach((a) => jobAnchors.push(a));
     }
+
+    console.log("Extracted jobAnchors before URL normalization:", jobAnchors);
+    console.log('domain', domain);
+    jobAnchors = jobAnchors.map((a) => {
+      return a.includes("http") ? a : new URL(a, domain).href;
+    });
     console.log("links -> ", links);
     urlcontext = (Array.isArray(jobAnchors) ? jobAnchors : [])
       .filter(
         (a) =>
           a &&
-          !(Array.isArray(links) ? links : []).some(
-            (l) => l && l.includes(a),
-          )
+          !(Array.isArray(links) ? links : []).some((l) => l && l.includes(a)),
       )
       .map((a) => {
         return !a
-          ? {title : "", company: "", link: url} : {title: "", company: "", link: a};
-      })
+          ? { title: "", company: "", link: url }
+          : { title: "", company: "", link: a };
+      });
 
     const removed = (Array.isArray(links) ? links : []).filter(
       (l) =>
@@ -1104,59 +1119,59 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     );
     fs.writeFileSync("job_links_for_llm.txt", urlcontext.join("\n"), "utf8");
 
-//     const index = url.lastIndexOf("#");
-//     index != -1 ? url.slice(0, index) : url;
+    //     const index = url.lastIndexOf("#");
+    //     index != -1 ? url.slice(0, index) : url;
 
-//     // here href might not be full url like "/jobs/senior-antenna-array-design-engineer-1", in this case it should be combined with base url
-//     let prefixNeeded =
-//       Array.isArray(jobAnchors) &&
-//       jobAnchors.length > 0 &&
-//       typeof jobAnchors[0].href === "string" &&
-//       !jobAnchors[0].href.includes("http");
-//     prefixNeeded
-//       ? (prompt = `Below is data related to job postings with the format (content — href — parent_href). 
-//   "${urlcontext}"
-//   if ${urlcontext} is empty or contains no columns related to job, return an empty array [].
-//   Extract all job postings in JSON format with the following fields:
-//   - title: Extracted from the content
-//   - company: Extracted from the href (if available)
-//   - link: A valid, full URL of the company relating to href and parent_href.
+    //     // here href might not be full url like "/jobs/senior-antenna-array-design-engineer-1", in this case it should be combined with base url
+    //     let prefixNeeded =
+    //       Array.isArray(jobAnchors) &&
+    //       jobAnchors.length > 0 &&
+    //       typeof jobAnchors[0].href === "string" &&
+    //       !jobAnchors[0].href.includes("http");
+    //     prefixNeeded
+    //       ? (prompt = `Below is data related to job postings with the format (content — href — parent_href).
+    //   "${urlcontext}"
+    //   if ${urlcontext} is empty or contains no columns related to job, return an empty array [].
+    //   Extract all job postings in JSON format with the following fields:
+    //   - title: Extracted from the content
+    //   - company: Extracted from the href (if available)
+    //   - link: A valid, full URL of the company relating to href and parent_href.
 
-//   Output in the following JSON format:
-//   [
-//     {
-//       "title": "Job Title",
-//       "company": "Company Name",
-//       "link": "Full Job Posting URL"
-//     },
-//     ...
-//   ]`)
-//       : (prompt = `Below is data related to job postings with the format (content — href).
-// "${urlcontext}"
+    //   Output in the following JSON format:
+    //   [
+    //     {
+    //       "title": "Job Title",
+    //       "company": "Company Name",
+    //       "link": "Full Job Posting URL"
+    //     },
+    //     ...
+    //   ]`)
+    //       : (prompt = `Below is data related to job postings with the format (content — href).
+    // "${urlcontext}"
 
-// If ${urlcontext} is empty or contains no job-related rows, return an empty array [].
+    // If ${urlcontext} is empty or contains no job-related rows, return an empty array [].
 
-// Extract all job postings in JSON format with the following fields:
+    // Extract all job postings in JSON format with the following fields:
 
-// - title: Extracted from the content
-// - company: Extracted from the href text if it contains the company name; otherwise leave as an empty string.
-// - link: **Use the href EXACTLY as provided in the input. DO NOT modify it, DO NOT prepend ${new URL(url).hostname}, and DO NOT transform it.**
+    // - title: Extracted from the content
+    // - company: Extracted from the href text if it contains the company name; otherwise leave as an empty string.
+    // - link: **Use the href EXACTLY as provided in the input. DO NOT modify it, DO NOT prepend ${new URL(url).hostname}, and DO NOT transform it.**
 
-// Important rules:
-// - Do NOT combine href with ${new URL(url).hostname}.
-// - Do NOT generate or guess URLs.
-// - Do NOT rewrite or complete the href. Use it exactly as-is.
-// - Only output JSON.
+    // Important rules:
+    // - Do NOT combine href with ${new URL(url).hostname}.
+    // - Do NOT generate or guess URLs.
+    // - Do NOT rewrite or complete the href. Use it exactly as-is.
+    // - Only output JSON.
 
-// Output format:
-// [
-//   {
-//     "title": "Job Title",
-//     "company": "Company Name",
-//     "link": "Exact href provided"
-//   }
-// ]
-// `);
+    // Output format:
+    // [
+    //   {
+    //     "title": "Job Title",
+    //     "company": "Company Name",
+    //     "link": "Exact href provided"
+    //   }
+    // ]
+    // `);
     // const res = await openai.chat.completions.create({
     //   model: "gpt-4o",
     //   messages: [{ role: "user", content: prompt }],
@@ -1209,7 +1224,7 @@ const Scraper = async (name, url, apiKey, step, links, selector) => {
     // }
     // console.log("Parsed JSON:", json.length);
 
-    page.close();
+    // page.close();
 
     return {
       found: 1,

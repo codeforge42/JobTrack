@@ -1,9 +1,11 @@
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const crypto = require('crypto');
 const Company = require('../models/Company');
 const User = require('../models/User');
+const { analyzeJobLinks } = require('../services/analyzeJobLinks');
 const { response } = require('../server');
 
 // Fetch companies per customer
@@ -257,6 +259,27 @@ router.post('/:id/deleteRecords', async (req, res) => {
   } catch (error) {
     console.error('Deleting error:', error.message);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Analyze job links from JobLinks.xlsx and return new Excel with Remote column
+router.post('/:id/analyze-job-links', async (req, res) => {
+  try {
+    const { filePath, fileName } = await analyzeJobLinks();
+    res.download(path.resolve(filePath), fileName, (err) => {
+      if (err) {
+        console.error('Download error:', err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, message: 'Failed to send file' });
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Analyze job links error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to analyze job links',
+    });
   }
 });
 

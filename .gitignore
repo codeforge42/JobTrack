@@ -26,3 +26,4 @@ dist-ssr
 /backend/.env
 groups.txt
 job_links_for_llm.txt
+/backend/output

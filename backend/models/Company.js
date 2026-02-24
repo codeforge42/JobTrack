@@ -125,6 +125,7 @@ class Company {
             classified_jobList.push({
               id: crypto.randomBytes(16).toString('hex'),
               title: job.title,
+              company: company.name,
               description: "",
               link: job.link,
               found: now
@@ -133,6 +134,7 @@ class Company {
             classified_jobList.push({
               id: crypto.randomBytes(16).toString('hex'),
               title: job.title,
+              company: company.name,
               description: job.detail,
               link: job.link,
               found: now
